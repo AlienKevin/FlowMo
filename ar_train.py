@@ -46,7 +46,7 @@ class SFTTrainer:
         self.device = torch.device(f"cuda:{local_rank}")
         torch.cuda.set_device(self.device)
 
-        self.ckpt_dir = f"./ckpts/{project_name}"
+        self.ckpt_dir = f"./results/{project_name}"
         if self.rank == 0:
             total_batch_size = batch_size * world_size
             self.logger = wandb.init(entity=entity, project=project_name, name=f'batch_size_{total_batch_size}_epochs_{epochs}')
@@ -77,11 +77,15 @@ class SFTTrainer:
             imagenet_class_index = json.load(f)
         
         self.class_id_to_name = {}
-        for _, info in imagenet_class_index.items():
+        class_idx_to_id = {}
+        for idx, info in imagenet_class_index.items():
             self.class_id_to_name[info[0]] = info[1]
+            class_idx_to_id[int(idx)] = info[0]
         
         train_items = []
         val_items = []
+
+        self.val_generation_class_ids = [class_idx_to_id[idx] for idx in [0, 207, 250, 980, 973, 812, 555, 311, 513, 937]]
 
         for class_id, class_items in class_data.items():
             random.shuffle(class_items)
@@ -153,6 +157,11 @@ class SFTTrainer:
             print(f"Setting context length to {n_ctx}")
 
         model = init_gpt(vocab_size=self.num_visual_tokens+self.num_class_tokens+1, n_ctx=n_ctx, device=self.device)
+        
+        if self.rank == 0:
+            print("Compiling model...")
+        model = torch.compile(model)
+
         if self.world_size > 1:
             self.model = DDP(model, device_ids=[self.rank])
         else:
@@ -198,6 +207,8 @@ class SFTTrainer:
         self.decoder_model.load_state_dict(state_dict['model_ema_state_dict'], strict=False)
         self.decoder_model.eval()
         self.decoder_model.to(self.device)
+        print('Compiling decoder model...')
+        self.decoder_model = torch.compile(self.decoder_model)
 
     def eval(self):
         seed_everything(42)
@@ -208,11 +219,12 @@ class SFTTrainer:
                 input_ids = batch["input_ids"].to(self.device)
                 labels = input_ids.clone()
 
-                outputs = self.model(
-                    input_ids=input_ids,
-                    labels=labels,
-                    return_dict=True,
-                )
+                with torch.autocast('cuda', dtype=torch.bfloat16):
+                    outputs = self.model(
+                        input_ids=input_ids,
+                        labels=labels,
+                        return_dict=True,
+                    )
                 loss = outputs.loss
                 total_loss += loss.item()
         
@@ -228,22 +240,20 @@ class SFTTrainer:
             # Generation
             self.decoder_model.eval()
 
-            num_samples_per_class = 1
+            num_samples_per_class = 4
             columns = ["class_id", "class_name"] + [f"sample_{i}" for i in range(num_samples_per_class)]
             table = wandb.Table(columns=columns)
-            
-            val_generation_class_ids = sorted(list(self.class_to_idx.keys()))
 
             logits_processor = [FilterLogitsProcessor(self.num_visual_tokens)]
             
             model_for_generation = self.model.module if self.world_size > 1 else self.model
 
             with torch.no_grad(), torch.autocast('cuda', dtype=torch.bfloat16):
-                class_tokens = [self.num_visual_tokens + self.class_to_idx[class_id] for class_id in val_generation_class_ids]
+                class_tokens = [self.num_visual_tokens + self.class_to_idx[class_id] for class_id in self.val_generation_class_ids]
 
                 for i in tqdm(range(0, len(class_tokens), self.batch_size), desc="Generating images"):
                     batch_class_tokens = class_tokens[i:i+self.batch_size]
-                    batch_class_ids = val_generation_class_ids[i:i+self.batch_size]
+                    batch_class_ids = self.val_generation_class_ids[i:i+self.batch_size]
                     
                     prompts = torch.tensor(batch_class_tokens, device=self.device).unsqueeze(1)
                     attention_mask = torch.ones_like(prompts)
@@ -338,11 +348,12 @@ class SFTTrainer:
 
                     # print(f"input_ids max: {input_ids.max().item()}, min: {input_ids.min().item()}")
 
-                    outputs = self.model(
-                        input_ids=input_ids,
-                        labels=labels,
-                        return_dict=True,
-                    )
+                    with torch.autocast('cuda', dtype=torch.bfloat16):
+                        outputs = self.model(
+                            input_ids=input_ids,
+                            labels=labels,
+                            return_dict=True,
+                        )
 
                     # Compute loss
                     loss = outputs.loss
@@ -366,7 +377,7 @@ class SFTTrainer:
 
             if self.rank == 0:
                 if (epoch == 0) or ((epoch + 1) % 10 == 0) or (epoch == self.epochs - 1):
-                    model_save_path = os.path.join(self.ckpt_dir, f'sft_epoch_{epoch}')
+                    model_save_path = os.path.join(self.ckpt_dir, f'epoch_{epoch}')
                     model_to_save = self.model.module if self.world_size > 1 else self.model
                     save_model(model_to_save, model_save_path)
 
@@ -455,6 +466,8 @@ if __name__ == "__main__":
     epochs = 300
     total_batch_size = 256
     gradient_accumulation_steps = 1
+
+    torch.set_float32_matmul_precision('high')
 
     # Rely on environment variables set by the launcher (e.g., torchrun)
     world_size = int(os.environ.get("WORLD_SIZE", 1))
