@@ -10,3 +10,4 @@ scikit-image
 transformers
 wandb
 einx
+datasets
