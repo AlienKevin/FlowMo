@@ -58,7 +58,7 @@ class SFTTrainer:
         self.max_grad_norm = max_grad_norm
         self.gradient_accumulation_steps = gradient_accumulation_steps
 
-        with open('encoded_tokens_flowmo_lo.json', 'r') as f:
+        with open('data/encoded_tokens_flowmo_lo.json', 'r') as f:
             data = json.load(f)
 
         items = [{'image_name': k, 'tokens': v} for k, v in data.items()]
@@ -73,7 +73,7 @@ class SFTTrainer:
         unique_classes = sorted(class_data.keys())
         self.class_to_idx = {c: i for i, c in enumerate(unique_classes)}
         
-        with open('imagenet_class_index.json', 'r') as f:
+        with open('data/imagenet_class_index.json', 'r') as f:
             imagenet_class_index = json.load(f)
         
         self.class_id_to_name = {}
@@ -251,7 +251,7 @@ class SFTTrainer:
                     generated_sequences = model_for_generation.generate(
                         prompts,
                         attention_mask=attention_mask,
-                        max_length=model_for_generation.config.n_ctx,
+                        max_length=model_for_generation.config.max_position_embeddings,
                         num_return_sequences=num_samples_per_class,
                         do_sample=True,
                         top_k=0,
@@ -390,8 +390,10 @@ class SFTTrainer:
 def init_gpt(vocab_size, n_ctx=257, device='cuda:0'):
     from transformers import Qwen3ForCausalLM, AutoConfig
     config = AutoConfig.from_pretrained(
-        "Qwen/Qwen3-0.6B",
+        "Qwen/Qwen3-0.6B-Base",
         vocab_size=vocab_size,
+        max_position_embeddings=n_ctx,
+        use_cache=False,
     )
     model = Qwen3ForCausalLM(config).to(device)
     model_size = sum(t.numel() for t in model.parameters())
@@ -452,7 +454,7 @@ if __name__ == "__main__":
     project_name = 'imagenet_gpt2'
     epochs = 300
     total_batch_size = 256
-    gradient_accumulation_steps = 2
+    gradient_accumulation_steps = 1
 
     # Rely on environment variables set by the launcher (e.g., torchrun)
     world_size = int(os.environ.get("WORLD_SIZE", 1))
