@@ -11,3 +11,4 @@ transformers
 wandb
 einx
 datasets
+webdataset

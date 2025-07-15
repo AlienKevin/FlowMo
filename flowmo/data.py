@@ -6,6 +6,9 @@ import torch
 import torchvision.transforms as T
 from PIL import Image
 from torch.utils.data import Dataset
+import webdataset as wds
+from huggingface_hub import get_token
+from torch.utils.data import IterableDataset
 
 
 class IndexedTarDataset(Dataset):
@@ -69,3 +72,69 @@ class IndexedTarDataset(Dataset):
         example = dict()
         example["image"] = self.preprocess_image(self.index[i])
         return example
+
+
+class ImageNetWebDataset(IterableDataset):
+    def __init__(
+        self,
+        imagenet_tar=None,
+        imagenet_index=None,
+        split="train",
+        size=None,
+        random_crop=False,
+        aug_mode="default",
+        buffer_size=1000,
+    ):
+        self.size = size
+        self.random_crop = random_crop
+        self.aug_mode = aug_mode
+
+        if aug_mode == "default":
+            assert self.size is not None and self.size > 0
+            self.rescaler = T.Resize(self.size)
+            if not self.random_crop:
+                self.cropper = T.CenterCrop((self.size, self.size))
+            else:
+                self.cropper = T.RandomCrop((self.size, self.size))
+            self.preprocessor = T.Compose([self.rescaler, self.cropper])
+        else:
+            raise NotImplementedError
+
+        hf_token = get_token()
+        if hf_token is None:
+            raise ValueError(
+                "Hugging Face token not found. Please login using `huggingface-cli login`."
+            )
+
+        if split == "train":
+            self.url = "https://huggingface.co/datasets/timm/imagenet-1k-wds/resolve/main/imagenet1k-train-{{0000..1023}}.tar"
+            self.length = 1281167
+        elif split == "val" or split == "validation":
+            self.url = "https://huggingface.co/datasets/timm/imagenet-1k-wds/resolve/main/imagenet1k-validation-{{0000..0063}}.tar"
+            self.length = 50000
+        else:
+            raise ValueError(f"Unknown split: {split}")
+
+        # Use curl to get around redirection issues
+        self.url = f"pipe:curl -s -L '{self.url}' -H 'Authorization:Bearer {hf_token}'"
+
+        self.dataset = (
+            wds.WebDataset(self.url, shardshuffle=100, nodesplitter=wds.split_by_node)
+            .shuffle(buffer_size)
+            .decode("pil")
+            .rename(image="jpg;jpeg", label="cls")
+            .map(self.process_sample)
+            .with_length(self.length)
+        )
+
+    def process_sample(self, sample):
+        image = self.preprocessor(sample["image"])
+        image = np.array(image)
+        image = (image / 127.5 - 1.0).astype(np.float32)
+        return {"image": image}
+
+    def __iter__(self):
+        return iter(self.dataset)
+
+    def __len__(self):
+        return self.length

@@ -6,10 +6,11 @@ data:
   image_size: 256
   num_workers: 8
 
+  imagenet_data_source: 'local'
   imagenet_train_index: "imagenet_train_index_overall.json"
-  imagenet_train_tar: "ILSVRC2012_img_train.tar"
+  imagenet_train_tar: "/svl/u/ksarge/ILSVRC2012_img_train.tar"
   imagenet_val_index: "imagenet_val_index_overall.json"
-  imagenet_val_tar: "ILSVRC2012_img_val.tar"
+  imagenet_val_tar: "/svl/u/ksarge/ILSVRC2012_img_val.tar"
 
 model:
   enable_mup: True

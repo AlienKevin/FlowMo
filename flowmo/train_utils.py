@@ -98,8 +98,17 @@ def wrap_dataloader(dataloader):
 
 
 def load_dataset(config, split, shuffle_val=False):
+    match config.data.imagenet_data_source:
+        case "local":
+            data_source = data.IndexedTarDataset
+            shuffle_train = True
+            shuffle_val = shuffle_val
+        case "wds":
+            data_source = data.ImageNetWebDataset
+            shuffle_train = False
+            shuffle_val = False
     if split == "train":
-        dataset = data.IndexedTarDataset(
+        dataset = data_source(
             config.data.imagenet_train_tar,
             config.data.imagenet_train_index,
             size=config.data.image_size,
@@ -109,14 +118,14 @@ def load_dataset(config, split, shuffle_val=False):
             dataset,
             batch_size=config.data.batch_size,
             num_workers=config.data.num_workers,
-            shuffle=True,
+            shuffle=shuffle_train,
             pin_memory=True,
             drop_last=True,
         )
         dataloader.sampler.replacement = True
         return dataloader
     elif split == "val":
-        dataset = data.IndexedTarDataset(
+        dataset = data_source(
             config.data.imagenet_val_tar,
             config.data.imagenet_val_index,
             size=config.data.image_size,
