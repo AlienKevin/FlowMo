@@ -633,7 +633,7 @@ class FlowMo(nn.Module):
         indices = None
         if self.config.model.quantization_type == "noop":
             quantized = code
-            quantizer_loss = torch.tensor(0.0).to(code.device)
+            aux = {"quantizer_loss": torch.tensor(0.0).to(code.device)}
         elif self.config.model.quantization_type == "kl":
             # colocating features of same token before split is maybe slightly
             # better?
@@ -646,7 +646,7 @@ class FlowMo(nn.Module):
                 f=f // 2,
                 t=t,
             )
-            quantizer_loss = _kl_diagonal_gaussian(mean, logvar)
+            aux = {"quantizer_loss": _kl_diagonal_gaussian(mean, logvar)}
         elif self.config.model.quantization_type == "lfq":
             assert f % self.config.model.codebook_size_for_entropy == 0, f
             code = einops.rearrange(
@@ -666,9 +666,11 @@ class FlowMo(nn.Module):
                 + breakdown.commitment * self.config.model.commit_loss_weight
             )
             code = quantized
+            aux = {"quantizer_loss": quantizer_loss}
+            aux["vq_codebook_usage"] = torch.tensor(indices.unique().numel() / self.quantizer.codebook_size * 100)
         else:
             raise NotImplementedError
-        return code, indices, quantizer_loss
+        return code, indices, aux
 
     def forward(
         self,
@@ -685,7 +687,8 @@ class FlowMo(nn.Module):
 
         b, t, f = code.shape
 
-        code, _, aux["quantizer_loss"] = self._quantize(code)
+        code, _, quant_aux = self._quantize(code)
+        aux.update(quant_aux)
 
         mask = torch.ones_like(code[..., :1])
         code = torch.concatenate([code, mask], axis=-1)
@@ -806,12 +809,14 @@ def rf_loss(config, model, batch, aux_state):
     diff = z1 - vtheta - x
     x_pred = zt - vtheta * t
 
-    loss = ((diff) ** 2).mean(dim=list(range(1, len(x.shape))))
-    loss = loss.mean()
+    diffusion_loss = ((diff) ** 2).mean(dim=list(range(1, len(x.shape))))
+    diffusion_loss = diffusion_loss.mean()
 
     aux["loss_dict"] = {}
-    aux["loss_dict"]["diffusion_loss"] = loss
-    aux["loss_dict"]["quantizer_loss"] = aux["quantizer_loss"]
+    aux["loss_dict"]["diffusion_loss"] = diffusion_loss
+    for k in aux.keys():
+        if k.endswith('_loss'):
+            aux["loss_dict"][k] = aux[k]
 
     if config.opt.lpips_weight != 0.0:
         aux_loss = 0.0
@@ -821,12 +826,16 @@ def rf_loss(config, model, batch, aux_state):
         lpips_dist = aux_state["lpips_model"](x, x_pred)
         lpips_dist = (config.opt.lpips_weight * lpips_dist).mean() + aux_loss
         aux["loss_dict"]["lpips_loss"] = lpips_dist
-    else:
-        lpips_dist = 0.0
 
-    loss = loss + aux["quantizer_loss"] + lpips_dist
-    aux["loss_dict"]["total_loss"] = loss
-    return loss, aux
+    aux["loss_dict"]["total_loss"] = sum(aux["loss_dict"].values())
+
+    # Copy over other metrics
+    for key, value in aux.items():
+        if key != 'loss_dict' and key not in aux["loss_dict"] and \
+            (isinstance(value, torch.Tensor) and value.numel() == 1):
+            aux["loss_dict"][key] = value
+
+    return aux["loss_dict"]["total_loss"], aux
 
 
 def _edm_to_flow_convention(noise_level):
