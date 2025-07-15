@@ -17,6 +17,9 @@ echo "working directory = "$SLURM_SUBMIT_DIR
 
 source .venv/bin/activate
 
+# Enable google cloud bucket access for weight checkpointing
+export GOOGLE_APPLICATION_CREDENTIALS="data/flowmo_gcs.json"
+
 # Generate a random master port to avoid collision
 MASTER_PORT=$(expr 10000 + $(echo -n $SLURM_JOBID | tail -c 4))
 echo "Using MASTER_PORT="$MASTER_PORT

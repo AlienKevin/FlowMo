@@ -59,7 +59,7 @@ trainer:
   checkpoint_every: 5000
   max_steps: 10000000000000
   keep_every: 200000
-  gs_checkpoint_bucket: ""
+  gs_checkpoint_bucket: "gs://flowmo"
 
 eval:
   reconstruction: True
