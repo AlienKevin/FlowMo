@@ -88,8 +88,9 @@ def main(args, config):
     log_dir = os.path.join(args.results_dir, args.experiment_name)
     os.makedirs(log_dir, exist_ok=True)
 
+    # Inductor cache should be on same drive as GPU to prevent "torch._inductor.exc.InductorError: CppCompileError: C++ compile error"
     os.environ["TORCHINDUCTOR_CACHE_DIR"] = os.path.join(
-        log_dir, f"torchinductor_cache_{str(rank)}"
+        '/', 'tmp', f"{args.experiment_name}_torchinductor_cache_{str(rank)}"
     )
 
     device = rank % torch.cuda.device_count()
